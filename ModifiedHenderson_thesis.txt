@@ -1,0 +1,125 @@
+
+####Modified Henderson's method 3############ 
+##### Code written by Lars Ronnegard 2008-07-29#####
+
+rm(list=ls())
+library(lme4)
+library(nlme)
+
+
+####
+
+modHenderson_lmfast <- function(y, X, Z1, Z2, partitionII=FALSE) {
+  #Calculate three linear models
+  lm0 <- lm(y~. - 1, data = data.frame(X))
+  lm1 <- lm(y~. - 1, data = data.frame(cbind(X, Z1)))
+  lm2 <- lm(y~. - 1, data = data.frame(cbind(X, Z1, Z2)))
+  #Covariance of parameter estimates
+  TT0 <- summary(lm0)$cov.unscaled
+  TT1  <- summary(lm1)$cov.unscaled
+  TT2  <- summary(lm2)$cov.unscaled
+  design.X0 <- model.matrix(lm0)[,!summary(lm0)$aliased]
+  design.X <- model.matrix(lm1)[,!summary(lm1)$aliased]
+  X1TT1X1 <- design.X%*%TT1%*%t(design.X)
+  A <- X1TT1X1 - design.X0%*%TT0%*%t(design.X0)
+  design.X <- model.matrix(lm2)[,!summary(lm2)$aliased]
+  B <- design.X%*%TT2%*%t(design.X) - X1TT1X1
+  rm(TT0); rm(TT1); rm(TT2)
+  c <- n-sum(hatvalues(lm2))              #df for residuals
+  e <- sum(hatvalues(lm2)-hatvalues(lm1)) #df for vc1
+  f <- sum(hatvalues(lm1)-hatvalues(lm0)) #df for vc2
+  yAy <- crossprod(y,(fitted(lm1)-fitted(lm0)))
+  yBy <- crossprod(y,(fitted(lm2)-fitted(lm1)))
+  yCy <- crossprod(y,(y-fitted(lm2)))
+  rm(lm0); rm(lm1); rm(design.X0); rm(design.X)
+  if (!partitionII) {rm(lm2);  rm(X1TT1X1)}
+####################################
+  a <- sum(t(Z1)*crossprod(Z1,A))
+  AV1 <- crossprod(Z1,A%*%Z1)
+  c1<-1/(2/(a^2)*sum(AV1*AV1)+1)
+  rm(AV1)
+  d <- sum(t(Z2)*crossprod(Z2,A))
+  b <- sum(t(Z2)*crossprod(Z2,B))
+  BV2 <-  crossprod(Z2,B%*%Z2)
+  d1<-1/(2/(b^2)*sum(BV2*BV2)+1)
+  rm(BV2)
+##########################################
+  ##Henderson Partition I
+  k<-d*e-f*b
+  sigma1<-1/a*(yAy-d/b*yBy+k/(b*c)*yCy)
+  ######### modified Henderson Partition I
+  d2<-(d/b*d1*e-f)/((k/b)*(2/c+1))
+  modsigma1<-c1/a*(yAy-d/b*d1*(yBy)+k/(b*c)*d2*(yCy))
+  ##############
+  rm(yAy); rm(yBy)
+  if (partitionII) {
+    ##Henderson Partition II
+    lm3 <- lm(y~. - 1, data = data.frame(cbind(X, Z2)))
+    TT3  <- summary(lm3)$cov.unscaled
+    yEy <- crossprod(y,(fitted(lm2)-fitted(lm3)))
+    l <- sum(hatvalues(lm2)-hatvalues(lm3))
+    design.X <- model.matrix(lm3)[,!summary(lm3)$aliased]
+    X3TT3X3 <- B + X1TT1X1
+    rm(B)
+    E <-  X3TT3X3 - design.X%*%TT3%*%t(design.X)
+    rm(X3TT3X3); rm(design.X)
+    EV1 <- crossprod(Z1,E%*%Z1)
+    g <- sum(t(Z1)*crossprod(Z1,E))
+    sigma12<-yEy/g-l*yCy/(c*g)
+    ######### modified Henderson Partition II
+    c2<- g^2/(2*sum(EV1*EV1)+g^2)
+    e1<-c/(2+c)
+    modsigma12<-c2*yEy/g-c2*e1*l*yCy/(c*g)
+  }
+  if (!partitionII) {
+    sigma12=NULL
+    modsigma12=NULL
+  }
+  ##################################################################
+  vce <- list(HendersonPartitionI=sigma1,HendersonPartitionII=sigma12,modifiedHendersonPartitionI=modsigma1,modifiedHendersonPartitionII=modsigma12)
+ }
+
+
+#Simple simulation to test the functions
+set.seed(123)
+n=1000 #Total number of observations
+q1=100 #Number of clusters for random effect 1
+q2=100 #Number of clusters for random effect 2
+indx1<-sample(1:q1,n,replace=TRUE)
+indx2<-sample(1:q2,n,replace=TRUE)
+Z1<-matrix(0,n,q1)    #Incidence matrix for random effect 1
+Z2<-matrix(0,n,q2)    #Incidence matrix for random effect 2
+for (i in 1:n) {
+	Z1[i,indx1[i]]=1
+	Z2[i,indx2[i]]=1
+}
+X <- matrix(1,n,1)  #Design matrix for the fixed effects
+
+
+#Simulate observations
+sigma1=5    ###################variance component 1
+sigma2=2	###################variance component 2
+sigmae=10	###################variance component error
+
+e<-matrix(rnorm(n,0,sqrt(sigmae)), n, 1)    #Residuals
+u1<-matrix(rnorm(q1,0,sqrt(sigma1)), q1, 1)  #Random effect 1
+u2<-matrix(rnorm(q2,0,sqrt(sigma2)), q2, 1)  #Random effect 2
+y <- X + Z1 %*% u1 + Z2 %*% u2 + e
+###########################################################################
+#Test the functions
+
+
+test3<-modHenderson_lmfast(y, X, Z1, Z2, partitionII=TRUE)
+test3 ################all four estimates of the first variance component is printed
+
+###########The variance components computed with lmer()
+
+lmer.results <- lmer(y ~ 1 + (1 | factor(indx1)) + (1 | factor(indx2)))
+
+varcomp<-print(VarCorr(lmer.results),comp="Variance")
+varcomponent = as.data.frame(VarCorr(lmer.results))
+varcomponent1 =varcomponent[1,'vcov']
+
+
+varcomponent1######the first variance component according to lmer
+
